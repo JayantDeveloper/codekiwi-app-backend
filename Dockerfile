@@ -12,6 +12,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 COPY server.js ./
+COPY src ./src
 
 RUN mkdir -p slides temp uploads
 
