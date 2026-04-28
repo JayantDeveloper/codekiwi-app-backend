@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: codekiwi-app-backend
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DISABLE_CODE_EXECUTION
+        value: "true"
+      - key: APPSCRIPT_SECRET
+        sync: false   # set this manually in the Render dashboard

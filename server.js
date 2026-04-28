@@ -3,7 +3,6 @@
 require("dotenv").config();
 const express = require("express");
 const http = require("http");
-const https = require("https");
 const WebSocket = require("ws");
 const cors = require("cors");
 const multer = require("multer");
@@ -14,23 +13,13 @@ const bodyParser = require("body-parser");
 const { v4: uuidv4 } = require("uuid");
 
 const app = express();
-let server;
-
-if (process.env.NODE_ENV === "DEV") {
-  server = http.createServer(app);
-} else {
-  const options = {
-    key: fs.readFileSync("/etc/letsencrypt/live/api.codekiwi.app/privkey.pem"),
-    cert: fs.readFileSync("/etc/letsencrypt/live/api.codekiwi.app/fullchain.pem"),
-    rejectUnauthorized: false,
-  };
-
-  server = https.createServer(options, app);
-}
-
+const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const PORT = process.env.NODE_ENV === "DEV" ? 4000 : 443;
+// Render (and most PaaS platforms) terminate TLS at the load balancer and
+// forward plain HTTP internally, so we always bind HTTP here.
+// PORT is injected by the platform; fall back to 4000 for local dev.
+const PORT = process.env.PORT || 4000;
 
 // In-memory stores
 const studentSessions = {}; // { [sessionCode]: Array<{ id, name, code, output }> }
@@ -256,6 +245,12 @@ const LANG_CONFIG = {
 };
 
 app.post("/api/run", async (req, res) => {
+  // Docker-in-Docker is not available on Render's standard instances.
+  // Return a friendly error so the frontend degrades gracefully instead of hanging.
+  if (process.env.DISABLE_CODE_EXECUTION === "true") {
+    return res.status(503).json({ output: "⚠️ Code execution is not available in this environment." });
+  }
+
   const { code, language } = req.body;
   console.log("📩 Incoming /api/run request");
 
