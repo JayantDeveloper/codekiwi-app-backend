@@ -229,110 +229,66 @@ app.post("/api/sessions/upload", async (req, res) => {
 const LANG_CONFIG = {
   python: {
     extension: "py",
-    image: "python:3.10",
-    cmd: (filename) => `python -u ${filename}`,
+    getSpawn: (filePath) => spawn("python3", ["-u", filePath]),
   },
   javascript: {
     extension: "js",
-    image: "node:20",
-    cmd: (filename) => `node ${filename}`,
+    getSpawn: (filePath) => spawn("node", [filePath]),
   },
   java: {
     extension: "java",
-    image: "openjdk:17",
-    cmd: (filename) => `javac ${filename} && java ${path.parse(filename).name}`,
+    getSpawn: (filePath, execDir) =>
+      spawn("sh", ["-c", `javac "${filePath}" && java -cp "${execDir}" Main`]),
   },
 };
 
-app.post("/api/run", async (req, res) => {
-  // Docker-in-Docker is not available on Render's standard instances.
-  // Return a friendly error so the frontend degrades gracefully instead of hanging.
-  if (process.env.DISABLE_CODE_EXECUTION === "true") {
-    return res.status(503).json({ output: "⚠️ Code execution is not available in this environment." });
-  }
-
+app.post("/api/run", (req, res) => {
   const { code, language } = req.body;
-  console.log("📩 Incoming /api/run request");
+  console.log("📩 Incoming /api/run request, language:", language);
 
   if (!code || !language || !LANG_CONFIG[language]) {
-    console.warn("❗ Invalid request - Missing code or language");
+    console.warn("❗ Invalid request - missing code or language");
     return res.status(400).json({ error: "Invalid code or language" });
   }
 
-  console.log(
-    "🧾 Code received:\n-----BEGIN CODE-----\n%s\n------END CODE------\n🗣 Language: %s",
-    code,
-    language
-  );
-
-  const { extension, image, cmd } = LANG_CONFIG[language];
+  const { extension, getSpawn } = LANG_CONFIG[language];
   const filename = `Main.${extension}`;
-  const tempPath = path.join(__dirname, "temp");
+  const execId = uuidv4();
+  const execDir = path.join(__dirname, "temp", execId);
+  const filePath = path.join(execDir, filename);
 
-  if (!fs.existsSync(tempPath)) {
-    console.log("📂 Temp directory not found. Creating:", tempPath);
-    fs.mkdirSync(tempPath);
-  }
-
-  const filePath = path.join(tempPath, filename);
-  console.log("📝 Writing code to:", filePath);
+  fs.mkdirSync(execDir, { recursive: true });
   fs.writeFileSync(filePath, code, "utf8");
 
-  const child = spawn("sudo", [
-    "docker",
-    "run",
-    "--rm",
-    "-v",
-    `${tempPath}:/usr/src/app`,
-    "-w",
-    "/usr/src/app",
-    "--memory=100m",
-    "--cpus=0.5",
-    image,
-    "sh",
-    "-c",
-    cmd(filename),
-  ]);
-
-  let stdout = "";
-  let stderr = "";
+  const child = getSpawn(filePath, execDir);
+  let output = "";
   let responded = false;
 
-  const timer = setTimeout(() => {
+  const finish = (text) => {
     if (responded) return;
     responded = true;
+    clearTimeout(timer);
+    try { fs.rmSync(execDir, { recursive: true, force: true }); } catch {}
+    res.json({ output: text });
+  };
+
+  const timer = setTimeout(() => {
     child.kill("SIGKILL");
-    console.log("⛔ Execution killed due to timeout");
-    return res.json({
-      output: "⏰ Execution timed out (possible infinite loop)",
-    });
+    console.log("⛔ Execution timed out");
+    finish("⏰ Execution timed out (possible infinite loop)");
   }, 10000);
 
-  child.stdout.on("data", (data) => {
-    stdout += data.toString();
-  });
-  child.stderr.on("data", (data) => {
-    stderr += data.toString();
-  });
+  child.stdout.on("data", (data) => { output += data.toString(); });
+  child.stderr.on("data", (data) => { output += data.toString(); });
 
   child.on("error", (err) => {
-    if (responded) return;
-    responded = true;
-    clearTimeout(timer);
     console.error("❌ Spawn error:", err);
-    res.json({ output: "Failed to run code: " + err.message });
+    finish("Failed to run code: " + err.message);
   });
 
-  child.on("close", (code) => {
-    if (responded) return;
-    responded = true;
-    clearTimeout(timer);
-    if (code !== 0) {
-      console.log("❌ Process exited with code", code);
-      return res.json({ output: stderr || "Unknown error" });
-    }
-    console.log("✅ Execution success:\n", stdout);
-    res.json({ output: stdout });
+  child.on("close", (exitCode) => {
+    console.log(exitCode === 0 ? "✅ Execution success" : `❌ Process exited with code ${exitCode}`);
+    finish(output);
   });
 });
 
