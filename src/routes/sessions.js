@@ -53,13 +53,13 @@ function createRouter(wss) {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
 
-    const { notes, slidesUrl, fileBase64 } = req.body;
+    const { notes, slidesUrl, fileBase64, language } = req.body;
     if (!fileBase64 || !Array.isArray(notes) || !slidesUrl) {
       return res.status(400).json({ success: false, message: "Missing fields in request body" });
     }
 
     try {
-      const { sessionCode } = await processUpload({ fileBase64, notes, slidesUrl });
+      const { sessionCode } = await processUpload({ fileBase64, notes, slidesUrl, language });
       setSessionStatus(sessionCode, { active: true });
       setLock(sessionCode, false);
       res.status(201).json({ success: true, sessionCode });

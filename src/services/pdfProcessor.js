@@ -8,7 +8,7 @@ const SLIDES_DIR = path.join(__dirname, "../../slides");
  * Returns the sessionCode (timestamp-based ID) on success.
  * @param {{ fileBase64: string, notes: string[], slidesUrl: string }} params
  */
-async function processUpload({ fileBase64, notes, slidesUrl }) {
+async function processUpload({ fileBase64, notes, slidesUrl, language = "python" }) {
   const { pdf } = await import("pdf-to-img");
 
   const sessionCode = Date.now().toString();
@@ -34,7 +34,7 @@ async function processUpload({ fileBase64, notes, slidesUrl }) {
 
   fs.writeFileSync(path.join(outputDir, "notes.json"), JSON.stringify(notes, null, 2));
   fs.writeFileSync(path.join(outputDir, "index.json"), JSON.stringify({ slides: slideFiles }, null, 2));
-  fs.writeFileSync(path.join(outputDir, "meta.json"), JSON.stringify({ slidesUrl }, null, 2));
+  fs.writeFileSync(path.join(outputDir, "meta.json"), JSON.stringify({ slidesUrl, language }, null, 2));
 
   console.log(`✅ Session ${sessionCode} created with ${counter - 1} slides`);
   return { sessionCode, slideCount: counter - 1 };
