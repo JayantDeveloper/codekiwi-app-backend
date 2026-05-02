@@ -5,13 +5,13 @@ const SLIDES_DIR = path.join(__dirname, "../../slides");
 
 /**
  * Convert a base64-encoded PDF into slide PNGs and write session metadata.
- * Returns the sessionCode (timestamp-based ID) on success.
+ * Returns the sessionCode (6-digit random number) on success.
  * @param {{ fileBase64: string, notes: string[], slidesUrl: string }} params
  */
 async function processUpload({ fileBase64, notes, slidesUrl, language = "python" }) {
   const { pdf } = await import("pdf-to-img");
 
-  const sessionCode = Date.now().toString();
+  const sessionCode = String(Math.floor(100000 + Math.random() * 900000));
   const outputDir = path.join(SLIDES_DIR, sessionCode);
   fs.mkdirSync(outputDir, { recursive: true });
 
