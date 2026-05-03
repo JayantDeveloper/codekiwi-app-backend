@@ -32,4 +32,24 @@ function broadcastAll(wss, payload) {
   });
 }
 
-module.exports = { broadcastToSession, broadcastAll };
+/**
+ * Send a message to a specific student's WebSocket connection(s).
+ * @param {WebSocket.Server} wss
+ * @param {string} sessionCode
+ * @param {string} studentId
+ * @param {object} payload
+ */
+function broadcastToStudent(wss, sessionCode, studentId, payload) {
+  const msg = JSON.stringify(payload);
+  wss.clients.forEach((client) => {
+    if (
+      client.readyState === WebSocket.OPEN &&
+      client.sessionCode === sessionCode &&
+      client.studentId === studentId
+    ) {
+      client.send(msg);
+    }
+  });
+}
+
+module.exports = { broadcastToSession, broadcastAll, broadcastToStudent };

@@ -38,6 +38,7 @@ function attachHandlers(wss) {
 function handleMessage(wss, ws, data) {
   if (data.type === "join") {
     ws.sessionCode = data.sessionCode;
+    ws.studentId = data.studentId || null;
     ws.send(JSON.stringify({ type: "sync", slide: getCurrentSlide(ws.sessionCode) }));
     return;
   }

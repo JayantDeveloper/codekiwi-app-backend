@@ -2,7 +2,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const { v4: uuidv4 } = require("uuid");
-const { broadcastAll } = require("../utils/broadcast");
+const { broadcastAll, broadcastToStudent } = require("../utils/broadcast");
 const {
   getStudents,
   upsertStudent,
@@ -112,6 +112,18 @@ function createRouter(wss) {
     const student = getStudents(sessionCode).find((s) => s.id === studentId);
     if (!student) return res.status(404).json({ error: "Student not found" });
     res.json({ name: student.name || "Unknown", code: student.code || "", output: student.output || "" });
+  });
+
+  // ── Teacher code override → broadcasts to student ────────────────────────
+  router.post("/api/sessions/:sessionCode/students/:studentId/override", (req, res) => {
+    const { sessionCode, studentId } = req.params;
+    const { code } = req.body;
+    const students = getStudents(sessionCode);
+    const student = students.find((s) => s.id === studentId);
+    if (!student) return res.status(404).json({ error: "Student not found" });
+    upsertStudent(sessionCode, { ...student, code });
+    broadcastToStudent(wss, sessionCode, studentId, { type: "code-override", code });
+    res.json({ success: true });
   });
 
   // ── Notes ─────────────────────────────────────────────────────────────────
