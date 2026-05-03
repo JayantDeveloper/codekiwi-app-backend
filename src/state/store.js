@@ -32,14 +32,14 @@ function upsertStudent(sessionCode, { id, name, code, output }) {
 
 function getStudentColor(sessionCode) {
   const COLOR_PALETTE = [
-    "#e53e3e", // red
-    "#3b82f6", // blue
-    "#f97316", // orange
-    "#8b5cf6", // purple
-    "#14b8a6", // teal
-    "#ec4899", // pink
-    "#f59e0b", // amber
-    "#6366f1", // indigo
+    "#f87171", // red
+    "#60a5fa", // blue
+    "#fb923c", // orange
+    "#a78bfa", // purple
+    "#2dd4bf", // teal
+    "#f472b6", // pink
+    "#fbbf24", // amber
+    "#818cf8", // indigo
   ];
   const count = (studentSessions[sessionCode] || []).length;
   return COLOR_PALETTE[count % COLOR_PALETTE.length];
