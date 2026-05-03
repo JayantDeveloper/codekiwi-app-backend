@@ -7,6 +7,7 @@ const {
   getStudents,
   upsertStudent,
   addStudent,
+  getStudentColor,
   getSessionStatus,
   setSessionStatus,
   isLocked,
@@ -83,8 +84,9 @@ function createRouter(wss) {
     }
 
     const studentId = uuidv4();
-    addStudent(sessionCode, { id: studentId, name: name.trim(), code: "", output: "" });
-    res.json({ studentId });
+    const color = getStudentColor(sessionCode);
+    addStudent(sessionCode, { id: studentId, name: name.trim(), code: "", output: "", color });
+    res.json({ studentId, color });
   });
 
   // ── Student list ──────────────────────────────────────────────────────────
