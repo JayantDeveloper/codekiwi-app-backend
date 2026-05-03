@@ -1,6 +1,14 @@
 const fs = require("fs");
 const path = require("path");
 
+// pdfjs-dist v4 requires DOMMatrix which doesn't exist in Node.js — polyfill from canvas
+if (typeof globalThis.DOMMatrix === "undefined") {
+  try {
+    const { DOMMatrix } = require("canvas");
+    globalThis.DOMMatrix = DOMMatrix;
+  } catch {}
+}
+
 const SLIDES_DIR = path.join(__dirname, "../../slides");
 
 /**
