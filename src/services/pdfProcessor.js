@@ -9,7 +9,14 @@ const SLIDES_DIR = path.join(__dirname, "../../slides");
  * @param {{ fileBase64: string, notes: string[], slidesUrl: string }} params
  */
 async function processUpload({ fileBase64, notes, slidesUrl, language = "python" }) {
-  const { pdf } = await import("pdf-to-img");
+  let pdf;
+  try {
+    ({ pdf } = await import("pdf-to-img"));
+    console.log("✅ pdf-to-img imported");
+  } catch (importErr) {
+    console.error("❌ Failed to import pdf-to-img:", importErr);
+    throw importErr;
+  }
 
   const sessionCode = String(Math.floor(100000 + Math.random() * 900000));
   const outputDir = path.join(SLIDES_DIR, sessionCode);
@@ -18,12 +25,19 @@ async function processUpload({ fileBase64, notes, slidesUrl, language = "python"
   const pdfBuffer = Buffer.from(fileBase64, "base64");
   const pdfPath = path.join(outputDir, `${sessionCode}.pdf`);
   fs.writeFileSync(pdfPath, pdfBuffer);
+  console.log(`✅ PDF written: ${pdfPath} (${pdfBuffer.length} bytes)`);
 
-  const document = await pdf(pdfPath, { scale: 3 });
   let counter = 1;
-  for await (const image of document) {
-    await fs.promises.writeFile(path.join(outputDir, `slide-${counter}.png`), image);
-    counter++;
+  try {
+    const document = await pdf(pdfPath, { scale: 2 });
+    for await (const image of document) {
+      await fs.promises.writeFile(path.join(outputDir, `slide-${counter}.png`), image);
+      counter++;
+    }
+    console.log(`✅ Converted ${counter - 1} slides`);
+  } catch (convErr) {
+    console.error("❌ PDF conversion error:", convErr);
+    throw convErr;
   }
 
   const slideFiles = fs

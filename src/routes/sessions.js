@@ -65,8 +65,9 @@ function createRouter(wss) {
       setLock(sessionCode, false);
       res.status(201).json({ success: true, sessionCode });
     } catch (err) {
-      console.error("❌ Upload error:", err);
-      res.status(500).json({ success: false, message: "Failed to process upload" });
+      console.error("❌ Upload error:", err?.message || err);
+      console.error("❌ Stack:", err?.stack);
+      res.status(500).json({ success: false, message: "Failed to process upload", detail: err?.message });
     }
   });
 
