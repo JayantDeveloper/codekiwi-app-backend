@@ -17,6 +17,7 @@ const {
 const { processUpload } = require("../services/pdfProcessor");
 
 const SLIDES_DIR = path.join(__dirname, "../../slides");
+const SITE_END_URL = "https://www.codekiwi.tech/api/sessions/end";
 
 /**
  * @param {import('ws').Server} wss
@@ -199,7 +200,21 @@ function createRouter(wss) {
     fs.writeFileSync(metaPath, JSON.stringify({ ...meta, ended: true, endedAt }, null, 2));
 
     broadcastAll(wss, { type: "session-ended", sessionCode });
+
+    const studentCount = getStudents(sessionCode).length;
     clearSession(sessionCode);
+
+    // Best-effort: update endedAt + studentCount in the site's DB
+    const secret = process.env.APPSCRIPT_SECRET;
+    fetch(SITE_END_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(secret ? { "x-codekiwi-secret": secret } : {}),
+      },
+      body: JSON.stringify({ sessionCode, studentCount }),
+    }).catch((err) => console.warn("Site session-end notify failed:", err?.message));
+
     res.json({ success: true });
   });
 
