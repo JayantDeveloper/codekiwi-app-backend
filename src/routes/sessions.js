@@ -127,6 +127,14 @@ function createRouter(wss) {
     res.json({ success: true });
   });
 
+  // ── Teacher editing indicator → broadcasts to student ────────────────────
+  router.post("/api/sessions/:sessionCode/students/:studentId/editing", (req, res) => {
+    const { sessionCode, studentId } = req.params;
+    const editing = !!(req.body?.editing);
+    broadcastToStudent(wss, sessionCode, studentId, { type: "teacher-editing", editing });
+    res.json({ success: true });
+  });
+
   // ── Notes ─────────────────────────────────────────────────────────────────
   router.get("/api/sessions/:sessionCode/notes", (req, res) => {
     const notes = readNotesFile(req.params.sessionCode);
