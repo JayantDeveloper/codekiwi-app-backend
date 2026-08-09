@@ -13,6 +13,9 @@ const editorLocks = {};
 /** @type {{ [sessionCode: string]: number }} */
 const sessionSlides = {};
 
+/** @type {{ [sessionCode: string]: string }} */
+const teacherTokens = {};
+
 // ── studentSessions ──────────────────────────────────────────────────────────
 
 function getStudents(sessionCode) {
@@ -80,12 +83,26 @@ function setCurrentSlide(sessionCode, slide) {
   sessionSlides[sessionCode] = slide;
 }
 
+// ── teacherTokens ─────────────────────────────────────────────────────────────
+// Secret held only by the teacher (delivered via the add-on into the teacher-view
+// URL). Required for teacher-only actions so students/outsiders who know the
+// 6-digit session code cannot end the class, lock editors, or read/override code.
+
+function setTeacherToken(sessionCode, token) {
+  teacherTokens[sessionCode] = token;
+}
+
+function getTeacherToken(sessionCode) {
+  return teacherTokens[sessionCode];
+}
+
 // ── cleanup ───────────────────────────────────────────────────────────────────
 
 function clearSession(sessionCode) {
   delete studentSessions[sessionCode];
   delete editorLocks[sessionCode];
   delete sessionSlides[sessionCode];
+  delete teacherTokens[sessionCode];
 }
 
 module.exports = {
@@ -99,5 +116,7 @@ module.exports = {
   setLock,
   getCurrentSlide,
   setCurrentSlide,
+  setTeacherToken,
+  getTeacherToken,
   clearSession,
 };

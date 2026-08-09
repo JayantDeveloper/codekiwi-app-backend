@@ -1,6 +1,7 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { v4: uuidv4 } = require("uuid");
 const { broadcastAll, broadcastToStudent } = require("../utils/broadcast");
 const {
@@ -12,8 +13,23 @@ const {
   setSessionStatus,
   isLocked,
   setLock,
+  setTeacherToken,
+  getTeacherToken,
   clearSession,
 } = require("../state/store");
+
+// Teacher-only guard: the caller must present the session's teacher token
+// (delivered to the teacher via the add-on). Returns true if authorized, else
+// responds 403 and returns false.
+function requireTeacher(req, res, sessionCode) {
+  const expected = getTeacherToken(sessionCode);
+  const provided = req.headers["x-teacher-token"];
+  if (!expected || provided !== expected) {
+    res.status(403).json({ error: "Teacher authorization required" });
+    return false;
+  }
+  return true;
+}
 const { processUpload } = require("../services/pdfProcessor");
 
 const SLIDES_DIR = path.join(__dirname, "../../slides");
@@ -64,7 +80,9 @@ function createRouter(wss) {
       const { sessionCode } = await processUpload({ thumbnailUrls, notes, slidesUrl, language });
       setSessionStatus(sessionCode, { active: true });
       setLock(sessionCode, false);
-      res.status(201).json({ success: true, sessionCode });
+      const teacherToken = crypto.randomBytes(24).toString("hex");
+      setTeacherToken(sessionCode, teacherToken);
+      res.status(201).json({ success: true, sessionCode, teacherToken });
     } catch (err) {
       console.error("❌ Upload error:", err?.message || err);
       console.error("❌ Stack:", err?.stack);
@@ -93,7 +111,9 @@ function createRouter(wss) {
 
   // ── Student list ──────────────────────────────────────────────────────────
   router.get("/api/sessions/:sessionCode/students", (req, res) => {
-    res.json({ students: getStudents(req.params.sessionCode) });
+    const { sessionCode } = req.params;
+    if (!requireTeacher(req, res, sessionCode)) return;
+    res.json({ students: getStudents(sessionCode) });
   });
 
   // ── Student code update (heartbeat) ──────────────────────────────────────
@@ -110,6 +130,7 @@ function createRouter(wss) {
   // ── Teacher inspect student ───────────────────────────────────────────────
   router.get("/api/sessions/:sessionCode/students/:studentId", (req, res) => {
     const { sessionCode, studentId } = req.params;
+    if (!requireTeacher(req, res, sessionCode)) return;
     const student = getStudents(sessionCode).find((s) => s.id === studentId);
     if (!student) return res.status(404).json({ error: "Student not found" });
     res.json({ name: student.name || "Unknown", code: student.code || "", output: student.output || "" });
@@ -118,6 +139,7 @@ function createRouter(wss) {
   // ── Teacher code override → broadcasts to student ────────────────────────
   router.post("/api/sessions/:sessionCode/students/:studentId/override", (req, res) => {
     const { sessionCode, studentId } = req.params;
+    if (!requireTeacher(req, res, sessionCode)) return;
     const { code } = req.body;
     const students = getStudents(sessionCode);
     const student = students.find((s) => s.id === studentId);
@@ -130,6 +152,7 @@ function createRouter(wss) {
   // ── Teacher editing indicator → broadcasts to student ────────────────────
   router.post("/api/sessions/:sessionCode/students/:studentId/editing", (req, res) => {
     const { sessionCode, studentId } = req.params;
+    if (!requireTeacher(req, res, sessionCode)) return;
     const editing = !!(req.body?.editing);
     broadcastToStudent(wss, sessionCode, studentId, { type: "teacher-editing", editing });
     res.json({ success: true });
@@ -183,6 +206,7 @@ function createRouter(wss) {
 
   router.post("/api/sessions/:sessionCode/lock", (req, res) => {
     const { sessionCode } = req.params;
+    if (!requireTeacher(req, res, sessionCode)) return;
     const locked = !!(req.body?.locked);
     setLock(sessionCode, locked);
     broadcastAll(wss, { type: "lock-editors", sessionCode, locked });
@@ -192,6 +216,7 @@ function createRouter(wss) {
   // ── End session ───────────────────────────────────────────────────────────
   router.post("/api/sessions/:sessionCode/end", (req, res) => {
     const { sessionCode } = req.params;
+    if (!requireTeacher(req, res, sessionCode)) return;
     const sessionDir = path.join(SLIDES_DIR, sessionCode);
     if (!fs.existsSync(sessionDir)) {
       return res.status(404).json({ error: "Session not found" });
