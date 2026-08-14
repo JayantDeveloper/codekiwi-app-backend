@@ -5,7 +5,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node test/grader.test.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.0",

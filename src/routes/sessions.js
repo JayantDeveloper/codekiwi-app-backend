@@ -119,11 +119,11 @@ function createRouter(wss) {
   // ── Student code update (heartbeat) ──────────────────────────────────────
   router.post("/api/sessions/:sessionCode/code", (req, res) => {
     const { sessionCode } = req.params;
-    const { studentId, name, code, output } = req.body;
+    const { studentId, name, code, output, handRaised } = req.body;
     if (!studentId || !name) {
       return res.status(400).json({ error: "Missing studentId or name" });
     }
-    upsertStudent(sessionCode, { id: studentId, name, code, output });
+    upsertStudent(sessionCode, { id: studentId, name, code, output, handRaised });
     res.json({ success: true });
   });
 
@@ -133,7 +133,14 @@ function createRouter(wss) {
     if (!requireTeacher(req, res, sessionCode)) return;
     const student = getStudents(sessionCode).find((s) => s.id === studentId);
     if (!student) return res.status(404).json({ error: "Student not found" });
-    res.json({ name: student.name || "Unknown", code: student.code || "", output: student.output || "" });
+    res.json({
+      name: student.name || "Unknown",
+      code: student.code || "",
+      output: student.output || "",
+      handRaised: !!student.handRaised,
+      lastRunPassed: student.lastRunPassed ?? null,
+      grades: student.grades || {},
+    });
   });
 
   // ── Teacher code override → broadcasts to student ────────────────────────

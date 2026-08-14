@@ -1,7 +1,14 @@
 // In-memory session state. All mutations go through the exported functions
 // so there's a single place to add persistence or logging later.
 
-/** @type {{ [sessionCode: string]: Array<{ id: string, name: string, code: string, output: string }> }} */
+/**
+ * @type {{ [sessionCode: string]: Array<{
+ *   id: string, name: string, code: string, output: string, color?: string,
+ *   handRaised?: boolean, lastRunAt?: number, lastRunError?: boolean,
+ *   lastRunPassed?: boolean | null, runFailStreak?: number,
+ *   grades?: { [slideIndex: number]: { passed: boolean, ranAt: number } },
+ * }> }}
+ */
 const studentSessions = {};
 
 /** @type {{ [sessionCode: string]: { active: boolean, endedAt?: string } }} */
@@ -22,14 +29,54 @@ function getStudents(sessionCode) {
   return studentSessions[sessionCode] || [];
 }
 
-function upsertStudent(sessionCode, { id, name, code, output }) {
+// Merge-update a student. Only the fields actually present in `fields` are
+// written, so the 3s heartbeat (code/output/handRaised) never clobbers grade
+// or status fields set by recordRun — and vice versa.
+function upsertStudent(sessionCode, fields) {
+  const { id } = fields;
   if (!studentSessions[sessionCode]) studentSessions[sessionCode] = [];
   const existing = studentSessions[sessionCode].find((s) => s.id === id);
   if (existing) {
-    existing.code = code;
-    existing.output = output;
+    if (fields.name !== undefined) existing.name = fields.name;
+    if (fields.code !== undefined) existing.code = fields.code;
+    if (fields.output !== undefined) existing.output = fields.output;
+    if (fields.handRaised !== undefined) existing.handRaised = !!fields.handRaised;
   } else {
-    studentSessions[sessionCode].push({ id, name, code, output });
+    studentSessions[sessionCode].push({
+      id,
+      name: fields.name || "",
+      code: fields.code || "",
+      output: fields.output || "",
+      handRaised: !!fields.handRaised,
+    });
+  }
+}
+
+// Record the outcome of a student's code run: timestamp, error flag, and (when
+// the slide has an expected-output block) autograde pass/fail per slide index.
+// `runFailStreak` tracks consecutive unsuccessful runs so the dashboard can
+// auto-flag a student who's stuck even if they haven't raised their hand.
+function recordRun(sessionCode, studentId, { slideIndex, graded, passed, isError }) {
+  const students = studentSessions[sessionCode];
+  if (!students) return;
+  const s = students.find((st) => st.id === studentId);
+  if (!s) return;
+
+  s.lastRunAt = Date.now();
+  s.lastRunError = !!isError;
+
+  if (graded) {
+    s.lastRunPassed = !!passed;
+    if (!s.grades) s.grades = {};
+    if (Number.isInteger(slideIndex)) {
+      s.grades[slideIndex] = { passed: !!passed, ranAt: s.lastRunAt };
+    }
+    s.runFailStreak = passed ? 0 : (s.runFailStreak || 0) + 1;
+  } else {
+    // Ungraded run: correctness is unknown, so never claim "Done". A crash
+    // still counts toward the stuck streak; a clean run resets it.
+    s.lastRunPassed = null;
+    s.runFailStreak = isError ? (s.runFailStreak || 0) + 1 : 0;
   }
 }
 
@@ -108,6 +155,7 @@ function clearSession(sessionCode) {
 module.exports = {
   getStudents,
   upsertStudent,
+  recordRun,
   addStudent,
   getStudentColor,
   getSessionStatus,
