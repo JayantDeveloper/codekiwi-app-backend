@@ -7,6 +7,8 @@
  *   handRaised?: boolean, lastRunAt?: number, lastRunError?: boolean,
  *   lastRunPassed?: boolean | null, runFailStreak?: number,
  *   grades?: { [slideIndex: number]: { passed: boolean, ranAt: number } },
+ *   codeBySlide?: { [slideIndex: number]: string },
+ *   outputBySlide?: { [slideIndex: number]: string },
  * }> }}
  */
 const studentSessions = {};
@@ -32,23 +34,37 @@ function getStudents(sessionCode) {
 // Merge-update a student. Only the fields actually present in `fields` are
 // written, so the 3s heartbeat (code/output/handRaised) never clobbers grade
 // or status fields set by recordRun — and vice versa.
+//
+// When the heartbeat reports which slide the student is on (`slideIndex`), we
+// also keep a per-slide snapshot of their code + output. That's what the
+// end-of-session gradebook is built from: the flat `code`/`output` is only the
+// last-active buffer, but `codeBySlide`/`outputBySlide` retain each question's
+// work even after the student moves on.
 function upsertStudent(sessionCode, fields) {
   const { id } = fields;
   if (!studentSessions[sessionCode]) studentSessions[sessionCode] = [];
-  const existing = studentSessions[sessionCode].find((s) => s.id === id);
-  if (existing) {
-    if (fields.name !== undefined) existing.name = fields.name;
-    if (fields.code !== undefined) existing.code = fields.code;
-    if (fields.output !== undefined) existing.output = fields.output;
-    if (fields.handRaised !== undefined) existing.handRaised = !!fields.handRaised;
-  } else {
-    studentSessions[sessionCode].push({
+  let existing = studentSessions[sessionCode].find((s) => s.id === id);
+  if (!existing) {
+    existing = {
       id,
       name: fields.name || "",
       code: fields.code || "",
       output: fields.output || "",
       handRaised: !!fields.handRaised,
-    });
+    };
+    studentSessions[sessionCode].push(existing);
+  } else {
+    if (fields.name !== undefined) existing.name = fields.name;
+    if (fields.code !== undefined) existing.code = fields.code;
+    if (fields.output !== undefined) existing.output = fields.output;
+    if (fields.handRaised !== undefined) existing.handRaised = !!fields.handRaised;
+  }
+
+  if (Number.isInteger(fields.slideIndex)) {
+    if (!existing.codeBySlide) existing.codeBySlide = {};
+    if (!existing.outputBySlide) existing.outputBySlide = {};
+    if (fields.code !== undefined) existing.codeBySlide[fields.slideIndex] = fields.code;
+    if (fields.output !== undefined) existing.outputBySlide[fields.slideIndex] = fields.output;
   }
 }
 

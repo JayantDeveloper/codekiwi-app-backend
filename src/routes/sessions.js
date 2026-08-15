@@ -31,9 +31,11 @@ function requireTeacher(req, res, sessionCode) {
   return true;
 }
 const { processUpload } = require("../services/pdfProcessor");
+const { parseCodingNote } = require("../services/grader");
 
 const SLIDES_DIR = path.join(__dirname, "../../slides");
 const SITE_END_URL = "https://www.codekiwi.tech/api/sessions/end";
+const SITE_SNAPSHOT_URL = "https://www.codekiwi.tech/api/sessions/snapshot";
 
 /**
  * @param {import('ws').Server} wss
@@ -59,6 +61,44 @@ function readNotesFile(sessionCode) {
   const notesPath = path.join(SLIDES_DIR, sessionCode, "notes.json");
   if (!fs.existsSync(notesPath)) return null;
   return JSON.parse(fs.readFileSync(notesPath, "utf-8"));
+}
+
+// Build the gradebook snapshot for the site DB from current in-memory state.
+// Returns plain data (a value copy), so it's safe to clear session state after.
+// For each student, one answer per coding-question slide: their code, output,
+// and pass/fail — even for questions they never attempted (passed: null).
+function buildSessionSnapshot(sessionCode) {
+  const notes = readNotesFile(sessionCode);
+  const codingSlides = Array.isArray(notes)
+    ? notes.reduce((acc, note, i) => {
+        if (parseCodingNote(note).isCoding) acc.push(i);
+        return acc;
+      }, [])
+    : [];
+  const total = codingSlides.length;
+
+  const students = getStudents(sessionCode).map((s) => {
+    const grades = s.grades || {};
+    const codeBySlide = s.codeBySlide || {};
+    const outputBySlide = s.outputBySlide || {};
+    const answers = codingSlides.map((idx) => {
+      const g = grades[idx];
+      return {
+        slideIndex: idx,
+        code: codeBySlide[idx] || "",
+        output: outputBySlide[idx] || "",
+        passed: g ? !!g.passed : null,
+        ranAt: g && g.ranAt ? new Date(g.ranAt).toISOString() : null,
+      };
+    });
+    const score = codingSlides.reduce(
+      (n, idx) => n + (grades[idx] && grades[idx].passed ? 1 : 0),
+      0
+    );
+    return { name: s.name || "Unnamed", score, total, answers };
+  });
+
+  return { sessionCode, students };
 }
 
 function createRouter(wss) {
@@ -119,11 +159,11 @@ function createRouter(wss) {
   // ── Student code update (heartbeat) ──────────────────────────────────────
   router.post("/api/sessions/:sessionCode/code", (req, res) => {
     const { sessionCode } = req.params;
-    const { studentId, name, code, output, handRaised } = req.body;
+    const { studentId, name, code, output, handRaised, slideIndex } = req.body;
     if (!studentId || !name) {
       return res.status(400).json({ error: "Missing studentId or name" });
     }
-    upsertStudent(sessionCode, { id: studentId, name, code, output, handRaised });
+    upsertStudent(sessionCode, { id: studentId, name, code, output, handRaised, slideIndex });
     res.json({ success: true });
   });
 
@@ -242,10 +282,23 @@ function createRouter(wss) {
     broadcastAll(wss, { type: "session-ended", sessionCode });
 
     const studentCount = getStudents(sessionCode).length;
+    const secret = process.env.APPSCRIPT_SECRET;
+
+    // Persist the gradebook snapshot BEFORE clearing in-memory state, so the
+    // teacher can revisit each student's code + scores after the session.
+    const snapshot = buildSessionSnapshot(sessionCode);
+    fetch(SITE_SNAPSHOT_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(secret ? { "x-codekiwi-secret": secret } : {}),
+      },
+      body: JSON.stringify(snapshot),
+    }).catch((err) => console.warn("Site snapshot failed:", err?.message));
+
     clearSession(sessionCode);
 
     // Best-effort: update endedAt + studentCount in the site's DB
-    const secret = process.env.APPSCRIPT_SECRET;
     fetch(SITE_END_URL, {
       method: "POST",
       headers: {
