@@ -31,6 +31,12 @@ function getStudents(sessionCode) {
   return studentSessions[sessionCode] || [];
 }
 
+// Session codes that currently have students in memory (i.e. live sessions;
+// cleared sessions are removed from this map). Used by the autosave loop.
+function getSessionCodes() {
+  return Object.keys(studentSessions);
+}
+
 // Merge-update a student. Only the fields actually present in `fields` are
 // written, so the 3s heartbeat (code/output/handRaised) never clobbers grade
 // or status fields set by recordRun — and vice versa.
@@ -170,6 +176,7 @@ function clearSession(sessionCode) {
 
 module.exports = {
   getStudents,
+  getSessionCodes,
   upsertStudent,
   recordRun,
   addStudent,

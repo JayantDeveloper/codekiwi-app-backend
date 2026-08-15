@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require("uuid");
 const { broadcastAll, broadcastToStudent } = require("../utils/broadcast");
 const {
   getStudents,
+  getSessionCodes,
   upsertStudent,
   addStudent,
   getStudentColor,
@@ -101,8 +102,42 @@ function buildSessionSnapshot(sessionCode) {
   return { sessionCode, students };
 }
 
+// Persist a session's gradebook snapshot to the site (best-effort). Used both
+// at session end and by the periodic autosave. No-op if there's nothing to save.
+function postSnapshot(sessionCode) {
+  const snapshot = buildSessionSnapshot(sessionCode);
+  if (!snapshot.students.length) return;
+  const secret = process.env.APPSCRIPT_SECRET;
+  return fetch(SITE_SNAPSHOT_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(secret ? { "x-codekiwi-secret": secret } : {}),
+    },
+    body: JSON.stringify(snapshot),
+  }).catch((err) => console.warn("Site snapshot failed:", err?.message));
+}
+
+// Crash-safety: session state lives in memory, so a Render restart or redeploy
+// mid-lesson would lose everything. Periodically snapshot every live session so
+// the most a crash can cost is one interval's worth of work.
+const AUTOSAVE_MS = 60_000;
+let autosaveStarted = false;
+function startAutosave() {
+  if (autosaveStarted) return;
+  autosaveStarted = true;
+  setInterval(() => {
+    for (const code of getSessionCodes()) {
+      const status = getSessionStatus(code);
+      if (status && status.active === false) continue; // ended; already saved
+      postSnapshot(code);
+    }
+  }, AUTOSAVE_MS).unref();
+}
+
 function createRouter(wss) {
   const router = express.Router();
+  startAutosave();
 
   // ── Upload / create session ───────────────────────────────────────────────
   router.post("/api/sessions/upload", async (req, res) => {
@@ -284,17 +319,9 @@ function createRouter(wss) {
     const studentCount = getStudents(sessionCode).length;
     const secret = process.env.APPSCRIPT_SECRET;
 
-    // Persist the gradebook snapshot BEFORE clearing in-memory state, so the
-    // teacher can revisit each student's code + scores after the session.
-    const snapshot = buildSessionSnapshot(sessionCode);
-    fetch(SITE_SNAPSHOT_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(secret ? { "x-codekiwi-secret": secret } : {}),
-      },
-      body: JSON.stringify(snapshot),
-    }).catch((err) => console.warn("Site snapshot failed:", err?.message));
+    // Persist the final gradebook snapshot BEFORE clearing in-memory state, so
+    // the teacher can revisit each student's code + scores after the session.
+    postSnapshot(sessionCode);
 
     clearSession(sessionCode);
 
