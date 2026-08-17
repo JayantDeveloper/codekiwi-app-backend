@@ -6,9 +6,9 @@
 
 const EXECUTOR_URL = (process.env.EXECUTOR_URL || "").replace(/\/$/, "");
 const EXECUTOR_SECRET = process.env.EXECUTOR_SECRET || "";
-const EXECUTOR_TIMEOUT_MS = 20_000; // generous; the executor enforces its own 10s
+const EXECUTOR_TIMEOUT_MS = 25_000; // generous; the executor enforces its own wall-clock
 
-const SUPPORTED = new Set(["python", "javascript"]);
+const SUPPORTED = new Set(["python", "javascript", "java"]);
 
 /**
  * Run user code on the isolated executor service and return its output.
