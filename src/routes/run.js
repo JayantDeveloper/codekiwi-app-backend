@@ -1,6 +1,6 @@
 const express = require("express");
 const { executeCode } = require("../services/codeExecutor");
-const { getStudents, getSessionStatus, recordRun } = require("../state/store");
+const { getStudents, getSessionStatus, recordRun, getTeacherToken } = require("../state/store");
 const { getExpectedForSlide, gradeOutput, looksLikeError } = require("../services/grader");
 
 const router = express.Router();
@@ -40,27 +40,44 @@ router.post("/api/run", async (req, res) => {
   if (typeof code !== "string" || code.length > MAX_CODE_LENGTH) {
     return res.status(400).json({ error: "Code too large" });
   }
-  if (!sessionCode || !studentId) {
-    return res.status(403).json({ error: "Missing session or student" });
+  if (!sessionCode) {
+    return res.status(403).json({ error: "Missing session" });
   }
 
-  // The session must be active and the caller must be a student who joined it.
+  // The session must be active. The caller is either a joined student, or the
+  // teacher running a live demo (authorized by the session's teacher token).
   const status = getSessionStatus(sessionCode);
   if (status && status.active === false) {
     return res.status(410).json({ error: "Session has ended" });
   }
-  const isMember = getStudents(sessionCode).some((s) => s.id === studentId);
-  if (!isMember) {
-    return res.status(403).json({ error: "Not a participant in this session" });
+
+  const providedToken = req.headers["x-teacher-token"];
+  const expectedToken = getTeacherToken(sessionCode);
+  const isTeacher = !!expectedToken && providedToken === expectedToken;
+
+  if (!isTeacher) {
+    if (!studentId) {
+      return res.status(403).json({ error: "Missing student" });
+    }
+    const isMember = getStudents(sessionCode).some((s) => s.id === studentId);
+    if (!isMember) {
+      return res.status(403).json({ error: "Not a participant in this session" });
+    }
   }
 
-  if (rateLimited(`${sessionCode}:${studentId}`, Date.now())) {
+  const rateKey = isTeacher ? `${sessionCode}:teacher` : `${sessionCode}:${studentId}`;
+  if (rateLimited(rateKey, Date.now())) {
     return res.status(429).json({ error: "Too many runs. Wait a moment and try again." });
   }
 
   console.log("📩 /api/run", { language, sessionCode });
   try {
     const output = await executeCode({ code, language });
+
+    // Teacher demo runs just execute and return — nothing to grade or record.
+    if (isTeacher) {
+      return res.json({ output, grade: { graded: false } });
+    }
 
     // Autograde against the slide's expected-output block (if any) and record
     // the run so the teacher dashboard can show real status + scores.

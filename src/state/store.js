@@ -25,6 +25,9 @@ const sessionSlides = {};
 /** @type {{ [sessionCode: string]: string }} */
 const teacherTokens = {};
 
+/** @type {{ [sessionCode: string]: { active: boolean, code: string, output: string } }} */
+const demoStates = {};
+
 // ── studentSessions ──────────────────────────────────────────────────────────
 
 function getStudents(sessionCode) {
@@ -165,6 +168,21 @@ function getTeacherToken(sessionCode) {
   return teacherTokens[sessionCode];
 }
 
+// ── demoStates ────────────────────────────────────────────────────────────────
+// Live teacher-demo state: the teacher's current editor code + last run output,
+// mirrored read-only to every student while a demo is active. Persisted so a
+// student who joins or refreshes mid-demo can catch up.
+
+function getDemoState(sessionCode) {
+  return demoStates[sessionCode] || { active: false, code: "", output: "" };
+}
+
+function setDemoState(sessionCode, patch) {
+  const current = demoStates[sessionCode] || { active: false, code: "", output: "" };
+  demoStates[sessionCode] = { ...current, ...patch };
+  return demoStates[sessionCode];
+}
+
 // ── cleanup ───────────────────────────────────────────────────────────────────
 
 function clearSession(sessionCode) {
@@ -172,6 +190,7 @@ function clearSession(sessionCode) {
   delete editorLocks[sessionCode];
   delete sessionSlides[sessionCode];
   delete teacherTokens[sessionCode];
+  delete demoStates[sessionCode];
 }
 
 module.exports = {
@@ -189,5 +208,7 @@ module.exports = {
   setCurrentSlide,
   setTeacherToken,
   getTeacherToken,
+  getDemoState,
+  setDemoState,
   clearSession,
 };

@@ -1,6 +1,12 @@
 const WebSocket = require("ws");
 const { broadcastToSession, broadcastAll } = require("../utils/broadcast");
-const { getCurrentSlide, setCurrentSlide, setLock } = require("../state/store");
+const {
+  getCurrentSlide,
+  setCurrentSlide,
+  setLock,
+  getDemoState,
+  setDemoState,
+} = require("../state/store");
 
 const WS_PING_INTERVAL_MS = 30_000;
 
@@ -40,6 +46,37 @@ function handleMessage(wss, ws, data) {
     ws.sessionCode = data.sessionCode;
     ws.studentId = data.studentId || null;
     ws.send(JSON.stringify({ type: "sync", slide: getCurrentSlide(ws.sessionCode) }));
+    // Catch a late-joining / refreshing student up to an in-progress demo.
+    const demo = getDemoState(ws.sessionCode);
+    if (demo.active) {
+      ws.send(JSON.stringify({ type: "demo-start", code: demo.code, output: demo.output }));
+    }
+    return;
+  }
+
+  // ── Teacher live-demo: mirror the teacher's editor to every student ──────────
+  if (data.type === "demo-start") {
+    const sessionCode = data.sessionCode || ws.sessionCode;
+    const state = setDemoState(sessionCode, { active: true, code: data.code || "", output: "" });
+    broadcastToSession(wss, sessionCode, { type: "demo-start", code: state.code, output: state.output }, ws);
+    return;
+  }
+  if (data.type === "demo-code") {
+    const sessionCode = data.sessionCode || ws.sessionCode;
+    setDemoState(sessionCode, { code: data.code || "" });
+    broadcastToSession(wss, sessionCode, { type: "demo-code", code: data.code || "" }, ws);
+    return;
+  }
+  if (data.type === "demo-run") {
+    const sessionCode = data.sessionCode || ws.sessionCode;
+    setDemoState(sessionCode, { output: data.output || "" });
+    broadcastToSession(wss, sessionCode, { type: "demo-run", output: data.output || "" }, ws);
+    return;
+  }
+  if (data.type === "demo-end") {
+    const sessionCode = data.sessionCode || ws.sessionCode;
+    setDemoState(sessionCode, { active: false });
+    broadcastToSession(wss, sessionCode, { type: "demo-end" }, ws);
     return;
   }
 
