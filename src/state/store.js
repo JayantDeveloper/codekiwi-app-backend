@@ -28,6 +28,10 @@ const teacherTokens = {};
 /** @type {{ [sessionCode: string]: { active: boolean, code: string, output: string } }} */
 const demoStates = {};
 
+/** @type {{ [sessionCode: string]: number }} Last activity (ms epoch) — a student
+ * heartbeat or a teacher poll. Drives auto-finalize of abandoned sessions. */
+const sessionActivity = {};
+
 // ── studentSessions ──────────────────────────────────────────────────────────
 
 function getStudents(sessionCode) {
@@ -183,6 +187,19 @@ function setDemoState(sessionCode, patch) {
   return demoStates[sessionCode];
 }
 
+// ── sessionActivity ───────────────────────────────────────────────────────────
+// Timestamp of the last student heartbeat or teacher poll. The autosave loop
+// finalizes a session that has been silent too long (i.e. the teacher closed
+// the tab without clicking End), so its gradebook becomes reachable.
+
+function touchActivity(sessionCode) {
+  sessionActivity[sessionCode] = Date.now();
+}
+
+function getLastActivity(sessionCode) {
+  return sessionActivity[sessionCode] || 0;
+}
+
 // ── cleanup ───────────────────────────────────────────────────────────────────
 
 function clearSession(sessionCode) {
@@ -191,6 +208,7 @@ function clearSession(sessionCode) {
   delete sessionSlides[sessionCode];
   delete teacherTokens[sessionCode];
   delete demoStates[sessionCode];
+  delete sessionActivity[sessionCode];
 }
 
 module.exports = {
@@ -210,5 +228,7 @@ module.exports = {
   getTeacherToken,
   getDemoState,
   setDemoState,
+  touchActivity,
+  getLastActivity,
   clearSession,
 };

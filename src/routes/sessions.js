@@ -16,6 +16,8 @@ const {
   setLock,
   setTeacherToken,
   getTeacherToken,
+  touchActivity,
+  getLastActivity,
   clearSession,
 } = require("../state/store");
 
@@ -118,26 +120,86 @@ function postSnapshot(sessionCode) {
   }).catch((err) => console.warn("Site snapshot failed:", err?.message));
 }
 
-// Crash-safety: session state lives in memory, so a Render restart or redeploy
-// mid-lesson would lose everything. Periodically snapshot every live session so
-// the most a crash can cost is one interval's worth of work.
+// Finalize a session: persist the gradebook snapshot, mark it ended (in memory,
+// on disk, and in the site DB), tell students, then clear in-memory state. Used
+// both by the teacher's explicit End and by the abandoned-session sweep below.
+// Returns false if the session's slides no longer exist. Safe to call twice.
+function finalizeSession(sessionCode, wss) {
+  const sessionDir = path.join(SLIDES_DIR, sessionCode);
+  if (!fs.existsSync(sessionDir)) return false;
+
+  const endedAt = new Date().toISOString();
+  setSessionStatus(sessionCode, { active: false, endedAt });
+
+  const metaPath = path.join(sessionDir, "meta.json");
+  let meta = {};
+  try {
+    if (fs.existsSync(metaPath)) meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+  } catch {}
+  fs.writeFileSync(metaPath, JSON.stringify({ ...meta, ended: true, endedAt }, null, 2));
+
+  broadcastAll(wss, { type: "session-ended", sessionCode });
+
+  const studentCount = getStudents(sessionCode).length;
+  const secret = process.env.APPSCRIPT_SECRET;
+
+  // Persist the final gradebook snapshot BEFORE clearing in-memory state.
+  postSnapshot(sessionCode);
+  clearSession(sessionCode);
+
+  // Best-effort: update endedAt + studentCount in the site's DB.
+  fetch(SITE_END_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(secret ? { "x-codekiwi-secret": secret } : {}),
+    },
+    body: JSON.stringify({ sessionCode, studentCount }),
+  }).catch((err) => console.warn("Site session-end notify failed:", err?.message));
+
+  return true;
+}
+
+// Crash-safety + abandoned-session cleanup. Session state lives in memory, so a
+// Render restart mid-lesson would lose everything — snapshot every live session
+// each tick so the most a crash costs is one interval. AND, when a teacher just
+// closes the tab without clicking End, no one ever sets endedAt: the session
+// would show "Active" forever and its gradebook would stay unreachable. So if a
+// session has had no student heartbeat or teacher poll for STALE_MS, finalize it
+// automatically. A session that anyone still has open keeps heartbeating (every
+// 3s), so only a truly abandoned one is ended.
 const AUTOSAVE_MS = 60_000;
+const STALE_MS = 30 * 60_000; // 30 min of total silence → abandoned
 let autosaveStarted = false;
-function startAutosave() {
+function startAutosave(wss) {
   if (autosaveStarted) return;
   autosaveStarted = true;
   setInterval(() => {
+    const now = Date.now();
     for (const code of getSessionCodes()) {
       const status = getSessionStatus(code);
       if (status && status.active === false) continue; // ended; already saved
-      postSnapshot(code);
+      const last = getLastActivity(code);
+      // Unknown last-activity (e.g. a session live across this deploy): treat now
+      // as its baseline instead of finalizing it out from under a live class.
+      if (!last) {
+        touchActivity(code);
+        postSnapshot(code);
+        continue;
+      }
+      if (now - last > STALE_MS) {
+        console.log(`⏱️  Auto-finalizing abandoned session ${code} (silent ${Math.round((now - last) / 60000)}m)`);
+        finalizeSession(code, wss);
+      } else {
+        postSnapshot(code);
+      }
     }
   }, AUTOSAVE_MS).unref();
 }
 
 function createRouter(wss) {
   const router = express.Router();
-  startAutosave();
+  startAutosave(wss);
 
   // ── Upload / create session ───────────────────────────────────────────────
   router.post("/api/sessions/upload", async (req, res) => {
@@ -157,6 +219,7 @@ function createRouter(wss) {
       setLock(sessionCode, false);
       const teacherToken = crypto.randomBytes(24).toString("hex");
       setTeacherToken(sessionCode, teacherToken);
+      touchActivity(sessionCode); // baseline so a brand-new session isn't seen as stale
       res.status(201).json({ success: true, sessionCode, teacherToken });
     } catch (err) {
       console.error("❌ Upload error:", err?.message || err);
@@ -188,6 +251,7 @@ function createRouter(wss) {
   router.get("/api/sessions/:sessionCode/students", (req, res) => {
     const { sessionCode } = req.params;
     if (!requireTeacher(req, res, sessionCode)) return;
+    touchActivity(sessionCode); // teacher is present
     res.json({ students: getStudents(sessionCode) });
   });
 
@@ -199,6 +263,7 @@ function createRouter(wss) {
       return res.status(400).json({ error: "Missing studentId or name" });
     }
     upsertStudent(sessionCode, { id: studentId, name, code, output, handRaised, slideIndex });
+    touchActivity(sessionCode); // a student is active
     res.json({ success: true });
   });
 
@@ -299,43 +364,28 @@ function createRouter(wss) {
   router.post("/api/sessions/:sessionCode/end", (req, res) => {
     const { sessionCode } = req.params;
     if (!requireTeacher(req, res, sessionCode)) return;
-    const sessionDir = path.join(SLIDES_DIR, sessionCode);
-    if (!fs.existsSync(sessionDir)) {
+    if (!finalizeSession(sessionCode, wss)) {
       return res.status(404).json({ error: "Session not found" });
     }
-
-    const endedAt = new Date().toISOString();
-    setSessionStatus(sessionCode, { active: false, endedAt });
-
-    const metaPath = path.join(sessionDir, "meta.json");
-    let meta = {};
-    try {
-      if (fs.existsSync(metaPath)) meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
-    } catch {}
-    fs.writeFileSync(metaPath, JSON.stringify({ ...meta, ended: true, endedAt }, null, 2));
-
-    broadcastAll(wss, { type: "session-ended", sessionCode });
-
-    const studentCount = getStudents(sessionCode).length;
-    const secret = process.env.APPSCRIPT_SECRET;
-
-    // Persist the final gradebook snapshot BEFORE clearing in-memory state, so
-    // the teacher can revisit each student's code + scores after the session.
-    postSnapshot(sessionCode);
-
-    clearSession(sessionCode);
-
-    // Best-effort: update endedAt + studentCount in the site's DB
-    fetch(SITE_END_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(secret ? { "x-codekiwi-secret": secret } : {}),
-      },
-      body: JSON.stringify({ sessionCode, studentCount }),
-    }).catch((err) => console.warn("Site session-end notify failed:", err?.message));
-
     res.json({ success: true });
+  });
+
+  // ── Live teacher token (for Rejoin) ───────────────────────────────────────
+  // The site calls this (secret-gated, after verifying the logged-in teacher
+  // owns the session) to get the live teacher token so it can hand the teacher
+  // back into their running session. 404 once the session is no longer live.
+  router.get("/api/sessions/:sessionCode/teacher-token", (req, res) => {
+    const secret = process.env.APPSCRIPT_SECRET;
+    if (secret && req.headers["x-codekiwi-secret"] !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const { sessionCode } = req.params;
+    const status = getSessionStatus(sessionCode);
+    const token = getTeacherToken(sessionCode);
+    if (!token || (status && status.active === false)) {
+      return res.status(404).json({ error: "Session is not live" });
+    }
+    res.json({ teacherToken: token });
   });
 
   return router;
