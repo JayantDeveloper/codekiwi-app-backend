@@ -144,7 +144,21 @@ function addStudent(sessionCode, student) {
 
 // ── sessionStatus ─────────────────────────────────────────────────────────────
 
+// Memory is the source of truth while the process lives. After a restart the
+// maps are empty, so token/status reads fall back to a loader (registered by
+// the routes module) that rehydrates them from the session's meta.json.
+let diskLoader = null;
+function setDiskLoader(fn) {
+  diskLoader = fn;
+}
+function hydrate(sessionCode) {
+  if (diskLoader && !(sessionCode in sessionStatus) && !(sessionCode in teacherTokens)) {
+    try { diskLoader(sessionCode); } catch {}
+  }
+}
+
 function getSessionStatus(sessionCode) {
+  hydrate(sessionCode);
   return sessionStatus[sessionCode];
 }
 
@@ -182,6 +196,7 @@ function setTeacherToken(sessionCode, token) {
 }
 
 function getTeacherToken(sessionCode) {
+  hydrate(sessionCode);
   return teacherTokens[sessionCode];
 }
 
@@ -225,6 +240,7 @@ function clearSession(sessionCode) {
 }
 
 module.exports = {
+  setDiskLoader,
   getStudents,
   getSessionCodes,
   upsertStudent,

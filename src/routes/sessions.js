@@ -19,6 +19,7 @@ const {
   touchActivity,
   getLastActivity,
   clearSession,
+  setDiskLoader,
 } = require("../state/store");
 
 // Teacher-only guard: the caller must present the session's teacher token
@@ -64,8 +65,43 @@ function parseNotesData(notesData) {
 function readNotesFile(sessionCode) {
   const notesPath = path.join(SLIDES_DIR, sessionCode, "notes.json");
   if (!fs.existsSync(notesPath)) return null;
-  return JSON.parse(fs.readFileSync(notesPath, "utf-8"));
+  try {
+    return JSON.parse(fs.readFileSync(notesPath, "utf-8"));
+  } catch (e) {
+    console.error("Unreadable notes.json for", sessionCode, e?.message);
+    return null;
+  }
 }
+
+function readMeta(sessionCode) {
+  const metaPath = path.join(SLIDES_DIR, sessionCode, "meta.json");
+  if (!fs.existsSync(metaPath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function writeMeta(sessionCode, patch) {
+  const metaPath = path.join(SLIDES_DIR, sessionCode, "meta.json");
+  const meta = readMeta(sessionCode) || {};
+  try {
+    fs.writeFileSync(metaPath, JSON.stringify({ ...meta, ...patch }, null, 2));
+  } catch (e) {
+    console.error("Failed to write meta.json for", sessionCode, e?.message);
+  }
+}
+
+// Rehydrate token + status from disk after a restart, so the teacher's tab
+// keeps working and the session can still be ended/finalized properly.
+setDiskLoader((sessionCode) => {
+  const meta = readMeta(sessionCode);
+  if (!meta) return;
+  if (meta.teacherToken) setTeacherToken(sessionCode, meta.teacherToken);
+  if (meta.ended) setSessionStatus(sessionCode, { active: false, endedAt: meta.endedAt });
+  else if (meta.teacherToken) setSessionStatus(sessionCode, { active: true });
+});
 
 // Build the gradebook snapshot for the site DB from current in-memory state.
 // Returns plain data (a value copy), so it's safe to clear session state after.
@@ -108,6 +144,10 @@ function buildSessionSnapshot(sessionCode) {
 // Persist a session's gradebook snapshot to the site (best-effort). Used both
 // at session end and by the periodic autosave. No-op if there's nothing to save.
 function postSnapshot(sessionCode) {
+  if (!readNotesFile(sessionCode)) {
+    console.warn(`Snapshot skipped for ${sessionCode}: notes missing (restart?); not overwriting saved gradebook`);
+    return;
+  }
   const snapshot = buildSessionSnapshot(sessionCode);
   if (!snapshot.students.length) return;
   return postToSite(SITE_SNAPSHOT_URL, snapshot, `snapshot ${sessionCode}`);
@@ -154,12 +194,7 @@ function finalizeSession(sessionCode, wss) {
   const endedAt = new Date().toISOString();
   setSessionStatus(sessionCode, { active: false, endedAt });
 
-  const metaPath = path.join(sessionDir, "meta.json");
-  let meta = {};
-  try {
-    if (fs.existsSync(metaPath)) meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
-  } catch {}
-  fs.writeFileSync(metaPath, JSON.stringify({ ...meta, ended: true, endedAt }, null, 2));
+  writeMeta(sessionCode, { ended: true, endedAt });
 
   broadcastAll(wss, { type: "session-ended", sessionCode });
 
@@ -198,6 +233,7 @@ function startAutosave(wss) {
   setInterval(() => {
     const now = Date.now();
     for (const code of getSessionCodes()) {
+      try {
       const status = getSessionStatus(code);
       if (status && status.active === false) continue; // ended; already saved
       const last = getLastActivity(code);
@@ -214,8 +250,23 @@ function startAutosave(wss) {
       } else {
         postSnapshot(code);
       }
+      } catch (e) {
+        console.error("autosave tick failed for", code, e?.message);
+      }
     }
   }, AUTOSAVE_MS).unref();
+
+  // Render sends SIGTERM before a deploy/restart: push a last snapshot for
+  // every live session so at most a few seconds of work are lost.
+  let shuttingDown = false;
+  process.on("SIGTERM", async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log("SIGTERM: flushing snapshots for live sessions");
+    const live = getSessionCodes().filter((c) => getSessionStatus(c)?.active !== false);
+    await Promise.allSettled(live.map((c) => postSnapshot(c)));
+    process.exit(0);
+  });
 }
 
 const MAX_NAME_LEN = 60;
@@ -250,6 +301,7 @@ function createRouter(wss) {
       setLock(sessionCode, false);
       const teacherToken = crypto.randomBytes(24).toString("hex");
       setTeacherToken(sessionCode, teacherToken);
+      writeMeta(sessionCode, { teacherToken, createdAt: new Date().toISOString() });
       touchActivity(sessionCode); // baseline so a brand-new session isn't seen as stale
       res.status(201).json({ success: true, sessionCode, teacherToken });
     } catch (err) {
@@ -417,13 +469,9 @@ function createRouter(wss) {
 
     let active = getSessionStatus(sessionCode)?.active;
     if (active === undefined) {
-      const metaPath = path.join(sessionPath, "meta.json");
-      if (exists && fs.existsSync(metaPath)) {
-        try {
-          active = !JSON.parse(fs.readFileSync(metaPath, "utf-8")).ended;
-        } catch {
-          active = true;
-        }
+      const meta = exists ? readMeta(sessionCode) : null;
+      if (meta) {
+        active = !meta.ended;
       } else {
         active = exists;
       }
