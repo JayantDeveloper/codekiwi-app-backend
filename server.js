@@ -20,7 +20,8 @@ const { scheduleCleanup, TEMP_DIR } = require("./src/utils/cleanup");
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+// 256 KB is ample for demo code; the default is 100 MiB per message.
+const wss = new WebSocket.Server({ server, maxPayload: 256 * 1024 });
 
 const PORT = process.env.PORT || 4000;
 

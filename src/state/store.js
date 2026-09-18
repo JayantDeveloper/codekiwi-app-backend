@@ -72,6 +72,19 @@ function upsertStudent(sessionCode, fields) {
     if (fields.output !== undefined) existing.output = fields.output;
     if (fields.handRaised !== undefined) existing.handRaised = !!fields.handRaised;
   }
+  existing.lastSeen = Date.now();
+
+  // Run status is per slide: moving to a new slide must not carry "Done",
+  // "Error" or the stuck streak over from the previous question. Per-slide
+  // grades (the score) are kept in `grades`.
+  if (Number.isInteger(fields.slideIndex) && existing.slideIndex !== fields.slideIndex) {
+    if (existing.slideIndex !== undefined) {
+      existing.lastRunPassed = null;
+      existing.lastRunError = false;
+      existing.runFailStreak = 0;
+    }
+    existing.slideIndex = fields.slideIndex;
+  }
 
   if (Number.isInteger(fields.slideIndex)) {
     if (!existing.codeBySlide) existing.codeBySlide = {};
@@ -126,7 +139,7 @@ function getStudentColor(sessionCode) {
 
 function addStudent(sessionCode, student) {
   if (!studentSessions[sessionCode]) studentSessions[sessionCode] = [];
-  studentSessions[sessionCode].push(student);
+  studentSessions[sessionCode].push({ ...student, lastSeen: Date.now() });
 }
 
 // ── sessionStatus ─────────────────────────────────────────────────────────────

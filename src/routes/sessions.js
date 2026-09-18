@@ -218,9 +218,22 @@ function startAutosave(wss) {
   }, AUTOSAVE_MS).unref();
 }
 
+const MAX_NAME_LEN = 60;
+const MAX_TEXT_LEN = 50_000;
+const MAX_STUDENTS = 200;
+const MAX_SLIDE_INDEX = 5000;
+const REJOIN_STALE_MS = 60_000; // a same-named student silent this long is treated as a rejoin
+
 function createRouter(wss) {
   const router = express.Router();
   startAutosave(wss);
+
+  // Session codes are digits only; anything else 404s before it can reach a
+  // path.join (Express 5 decodes %2F, so "..%2F..%2Fetc" is otherwise a valid param).
+  router.param("sessionCode", (req, res, next, code) => {
+    if (!/^\d{6,16}$/.test(code)) return res.status(404).json({ error: "Not found" });
+    next();
+  });
 
   // ── Upload / create session ───────────────────────────────────────────────
   router.post("/api/sessions/upload", async (req, res) => {
@@ -255,13 +268,29 @@ function createRouter(wss) {
     if (status && status.active === false) {
       return res.status(410).json({ error: "Session has ended" });
     }
-    if (!name?.trim()) {
+    if (!fs.existsSync(path.join(SLIDES_DIR, sessionCode))) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+    if (typeof name !== "string" || !name.trim()) {
       return res.status(400).json({ error: "Name is required" });
+    }
+    const cleanName = name.trim().replace(/\s+/g, " ").slice(0, MAX_NAME_LEN);
+
+    // Same name, gone quiet (closed laptop, re-entered the code): hand back the
+    // existing seat and its work instead of adding a duplicate card.
+    const students = getStudents(sessionCode);
+    const stale = students.find(
+      (s) => s.name.toLowerCase() === cleanName.toLowerCase() && Date.now() - (s.lastSeen || 0) > REJOIN_STALE_MS
+    );
+    if (stale) return res.json({ studentId: stale.id, color: stale.color, rejoined: true });
+
+    if (students.length >= MAX_STUDENTS) {
+      return res.status(429).json({ error: "This session is full" });
     }
 
     const studentId = uuidv4();
     const color = getStudentColor(sessionCode);
-    addStudent(sessionCode, { id: studentId, name: name.trim(), code: "", output: "", color });
+    addStudent(sessionCode, { id: studentId, name: cleanName, code: "", output: "", color });
     res.json({ studentId, color });
   });
 
@@ -280,7 +309,25 @@ function createRouter(wss) {
     if (!studentId || !name) {
       return res.status(400).json({ error: "Missing studentId or name" });
     }
-    upsertStudent(sessionCode, { id: studentId, name, code, output, handRaised, slideIndex });
+    const status = getSessionStatus(sessionCode);
+    if (status && status.active === false) {
+      return res.status(410).json({ error: "Session has ended" });
+    }
+    // Only a joined student may heartbeat; an unknown id must not conjure a
+    // roster entry (or resurrect a cleared session) out of thin air.
+    if (!getStudents(sessionCode).some((s) => s.id === studentId)) {
+      return res.status(403).json({ error: "Not a participant in this session" });
+    }
+    const idx = Number.isInteger(slideIndex) && slideIndex >= 0 && slideIndex <= MAX_SLIDE_INDEX ? slideIndex : undefined;
+    const clip = (v) => (typeof v === "string" ? v.slice(0, MAX_TEXT_LEN) : undefined);
+    const fields = { id: studentId, handRaised, slideIndex: idx };
+    // While editors are locked the client cannot legitimately change code, so
+    // ignore any it sends (a devtools user could still POST here).
+    if (!isLocked(sessionCode)) {
+      fields.code = clip(code);
+      fields.output = clip(output);
+    }
+    upsertStudent(sessionCode, fields);
     touchActivity(sessionCode); // a student is active
     res.json({ success: true });
   });

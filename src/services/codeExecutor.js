@@ -10,6 +10,15 @@ const EXECUTOR_TIMEOUT_MS = 25_000; // generous; the executor enforces its own w
 
 const SUPPORTED = new Set(["python", "javascript", "java"]);
 
+// The executor could not run the program at all (busy, down, or unreachable).
+// Distinct from program output so callers never grade it as a wrong answer.
+class ExecutorUnavailable extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ExecutorUnavailable";
+  }
+}
+
 /**
  * Run user code on the isolated executor service and return its output.
  * @param {{ code: string, language: string }} params
@@ -21,7 +30,7 @@ async function executeCode({ code, language }) {
   }
   if (!EXECUTOR_URL) {
     console.warn("EXECUTOR_URL not configured — code execution unavailable");
-    return "Code execution is temporarily unavailable. Please try again shortly.";
+    throw new ExecutorUnavailable("Code execution is temporarily unavailable. Please try again shortly.");
   }
 
   const controller = new AbortController();
@@ -36,20 +45,26 @@ async function executeCode({ code, language }) {
       body: JSON.stringify({ code, language }),
       signal: controller.signal,
     });
+    if (res.status === 503) {
+      throw new ExecutorUnavailable("Too many programs running right now. Try again in a few seconds.");
+    }
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
-      throw new Error(`Executor responded ${res.status}: ${detail.slice(0, 200)}`);
+      console.error(`Executor responded ${res.status}: ${detail.slice(0, 200)}`);
+      throw new ExecutorUnavailable("Code execution failed on the server. Try again in a moment.");
     }
     const data = await res.json();
     return data.output ?? "";
   } catch (err) {
+    if (err instanceof ExecutorUnavailable) throw err;
     if (err.name === "AbortError") {
-      return "⏰ Execution timed out.";
+      throw new ExecutorUnavailable("The code runner is overloaded. Try again in a few seconds.");
     }
-    throw err;
+    console.error("Executor unreachable:", err.message);
+    throw new ExecutorUnavailable("Code execution is temporarily unavailable. Please try again shortly.");
   } finally {
     clearTimeout(timer);
   }
 }
 
-module.exports = { executeCode };
+module.exports = { executeCode, ExecutorUnavailable };

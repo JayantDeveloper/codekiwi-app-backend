@@ -1,6 +1,7 @@
 const express = require("express");
-const { executeCode } = require("../services/codeExecutor");
-const { getStudents, getSessionStatus, recordRun, getTeacherToken } = require("../state/store");
+const { executeCode, ExecutorUnavailable } = require("../services/codeExecutor");
+const { getStudents, getSessionStatus, recordRun, getTeacherToken, isLocked } = require("../state/store");
+const { safeEqual } = require("../utils/secrets");
 const { getExpectedForSlide, gradeOutput, looksLikeError } = require("../services/grader");
 
 const router = express.Router();
@@ -53,7 +54,7 @@ router.post("/api/run", async (req, res) => {
 
   const providedToken = req.headers["x-teacher-token"];
   const expectedToken = getTeacherToken(sessionCode);
-  const isTeacher = !!expectedToken && providedToken === expectedToken;
+  const isTeacher = !!expectedToken && safeEqual(providedToken, expectedToken);
 
   if (!isTeacher) {
     if (!studentId) {
@@ -62,6 +63,10 @@ router.post("/api/run", async (req, res) => {
     const isMember = getStudents(sessionCode).some((s) => s.id === studentId);
     if (!isMember) {
       return res.status(403).json({ error: "Not a participant in this session" });
+    }
+    // "Lock Editors" is enforced here, not just in the browser's read-only flag.
+    if (isLocked(sessionCode)) {
+      return res.status(423).json({ error: "Editors are locked by your teacher." });
     }
   }
 
@@ -81,25 +86,32 @@ router.post("/api/run", async (req, res) => {
 
     // Autograde against the slide's expected-output block (if any) and record
     // the run so the teacher dashboard can show real status + scores.
-    const isError = looksLikeError(output);
+    // An exact match wins outright: legitimate output like "Error: age must be
+    // positive" must not be vetoed by the crash heuristic.
     const idx = Number.isInteger(slideIndex) ? slideIndex : null;
     let grade = { graded: false };
 
     if (idx !== null) {
       const expected = getExpectedForSlide(sessionCode, idx);
       if (expected !== null) {
-        const passed = !isError && gradeOutput(output, expected);
+        const passed = gradeOutput(output, expected);
+        const isError = !passed && looksLikeError(output);
         grade = { graded: true, passed };
         recordRun(sessionCode, studentId, { slideIndex: idx, graded: true, passed, isError });
       } else {
+        const isError = looksLikeError(output);
         recordRun(sessionCode, studentId, { slideIndex: idx, graded: false, isError });
       }
     } else {
-      recordRun(sessionCode, studentId, { graded: false, isError });
+      recordRun(sessionCode, studentId, { graded: false, isError: looksLikeError(output) });
     }
 
     res.json({ output, grade });
   } catch (err) {
+    if (err instanceof ExecutorUnavailable) {
+      // Infrastructure, not the student's program: nothing is recorded or graded.
+      return res.status(503).json({ error: err.message, retryable: true });
+    }
     console.warn("❗ Run error:", err.message);
     res.status(400).json({ error: err.message });
   }
