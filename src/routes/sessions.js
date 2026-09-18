@@ -115,7 +115,14 @@ function buildSessionSnapshot(sessionCode) {
         return acc;
       }, [])
     : [];
-  const total = codingSlides.length;
+  // Only slides with an Expected Output block can ever be marked correct, so
+  // only those count toward the denominator; a prompt-only coding slide is
+  // practice, not a graded question.
+  const gradedSlides = codingSlides.filter((i) => {
+    const e = parseCodingNote(notes[i]).expected;
+    return typeof e === "string" && e.trim().length > 0;
+  });
+  const total = gradedSlides.length;
 
   const students = getStudents(sessionCode).map((s) => {
     const grades = s.grades || {};
@@ -455,7 +462,7 @@ function createRouter(wss) {
     const notes = readNotesFile(req.params.sessionCode);
     if (!notes) return res.status(404).json({ error: "Notes not found" });
     const codingSlides = notes.reduce((acc, note, index) => {
-      if (typeof note === "string" && note.startsWith("Code Question:")) acc.push(index);
+      if (typeof note === "string" && parseCodingNote(note).isCoding) acc.push(index);
       return acc;
     }, []);
     res.json({ codingSlides });
