@@ -42,6 +42,14 @@ app.use(
   })
 );
 app.use(bodyParser.json({ limit: "10mb" }));
+// Only slide images and the slide index are public. notes.json (speaker notes,
+// including every "Expected Output:" answer key) and meta.json (the teacher's
+// edit URL) live in the same directory but are served through gated API
+// routes instead.
+app.use("/slides", (req, res, next) => {
+  if (/\/slide-\d+\.png$/.test(req.path) || /\/index\.json$/.test(req.path)) return next();
+  res.status(404).end();
+});
 app.use("/slides", express.static(path.join(__dirname, "slides")));
 
 // ── Routes ────────────────────────────────────────────────────────────────────

@@ -371,10 +371,31 @@ function createRouter(wss) {
   });
 
   // ── Notes ─────────────────────────────────────────────────────────────────
+  // Speaker notes carry the answer keys: teacher only.
   router.get("/api/sessions/:sessionCode/notes", (req, res) => {
-    const notes = readNotesFile(req.params.sessionCode);
+    const { sessionCode } = req.params;
+    if (!requireTeacher(req, res, sessionCode)) return;
+    const notes = readNotesFile(sessionCode);
     if (!notes) return res.status(404).json({ error: "Notes not found" });
     res.json({ notes });
+  });
+
+  // Public session metadata: only what a student needs (the language). The
+  // teacher's Slides URL stays private.
+  router.get("/api/sessions/:sessionCode/meta", (req, res) => {
+    const { sessionCode } = req.params;
+    const metaPath = path.join(SLIDES_DIR, sessionCode, "meta.json");
+    if (!fs.existsSync(metaPath)) return res.status(404).json({ error: "Not found" });
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+      const out = { language: meta.language || "python" };
+      if (safeEqual(req.headers["x-teacher-token"], getTeacherToken(sessionCode) || "\u0000")) {
+        out.slidesUrl = meta.slidesUrl || null;
+      }
+      res.json(out);
+    } catch {
+      res.status(500).json({ error: "Unreadable metadata" });
+    }
   });
 
   // ── Coding slides ─────────────────────────────────────────────────────────
