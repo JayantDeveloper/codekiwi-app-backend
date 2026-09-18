@@ -1,6 +1,10 @@
 // COMMAND TO START LOCAL TUNNEL: lt --port 4000 --subdomain tomato-slides
 
 require("dotenv").config();
+const { requireEnv } = require("./src/utils/secrets");
+// Refuse to boot with any auth gate open.
+requireEnv("APPSCRIPT_SECRET");
+requireEnv("EXECUTOR_SECRET");
 const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");

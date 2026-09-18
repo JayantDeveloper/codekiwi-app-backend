@@ -27,13 +27,14 @@ const {
 function requireTeacher(req, res, sessionCode) {
   const expected = getTeacherToken(sessionCode);
   const provided = req.headers["x-teacher-token"];
-  if (!expected || provided !== expected) {
+  if (!expected || !safeEqual(provided, expected)) {
     res.status(403).json({ error: "Teacher authorization required" });
     return false;
   }
   return true;
 }
 const { processUpload } = require("../services/pdfProcessor");
+const { requireSharedSecret, safeEqual } = require("../utils/secrets");
 const { parseCodingNote } = require("../services/grader");
 
 const SLIDES_DIR = path.join(__dirname, "../../slides");
@@ -109,15 +110,37 @@ function buildSessionSnapshot(sessionCode) {
 function postSnapshot(sessionCode) {
   const snapshot = buildSessionSnapshot(sessionCode);
   if (!snapshot.students.length) return;
-  const secret = process.env.APPSCRIPT_SECRET;
-  return fetch(SITE_SNAPSHOT_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(secret ? { "x-codekiwi-secret": secret } : {}),
-    },
-    body: JSON.stringify(snapshot),
-  }).catch((err) => console.warn("Site snapshot failed:", err?.message));
+  return postToSite(SITE_SNAPSHOT_URL, snapshot, `snapshot ${sessionCode}`);
+}
+
+// POST to the site with the shared secret, a timeout, and a visible outcome.
+// A non-2xx used to resolve silently (fetch only rejects on network errors),
+// which is how a 401 from a missing secret went unnoticed for weeks.
+async function postToSite(url, body, label) {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-codekiwi-secret": process.env.APPSCRIPT_SECRET,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      console.error(`Site ${label} rejected: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
+      return false;
+    }
+    const data = await res.json().catch(() => ({}));
+    if (data.saved === false || data.updated === false || data.registered === false) {
+      console.warn(`Site ${label}: not applied`, data);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error(`Site ${label} failed:`, err?.message);
+    return false;
+  }
 }
 
 // Finalize a session: persist the gradebook snapshot, mark it ended (in memory,
@@ -141,21 +164,19 @@ function finalizeSession(sessionCode, wss) {
   broadcastAll(wss, { type: "session-ended", sessionCode });
 
   const studentCount = getStudents(sessionCode).length;
-  const secret = process.env.APPSCRIPT_SECRET;
 
   // Persist the final gradebook snapshot BEFORE clearing in-memory state.
   postSnapshot(sessionCode);
   clearSession(sessionCode);
 
-  // Best-effort: update endedAt + studentCount in the site's DB.
-  fetch(SITE_END_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(secret ? { "x-codekiwi-secret": secret } : {}),
-    },
-    body: JSON.stringify({ sessionCode, studentCount }),
-  }).catch((err) => console.warn("Site session-end notify failed:", err?.message));
+  // Update endedAt + studentCount in the site's DB. Idempotent, so retry a few
+  // times: a lost notify leaves the session "Active" forever on the site.
+  (async () => {
+    for (const delay of [0, 2_000, 5_000, 15_000]) {
+      if (delay) await new Promise((r) => setTimeout(r, delay));
+      if (await postToSite(SITE_END_URL, { sessionCode, studentCount }, `end ${sessionCode}`)) return;
+    }
+  })();
 
   return true;
 }
@@ -203,10 +224,7 @@ function createRouter(wss) {
 
   // ── Upload / create session ───────────────────────────────────────────────
   router.post("/api/sessions/upload", async (req, res) => {
-    const secret = process.env.APPSCRIPT_SECRET;
-    if (secret && req.headers["x-codekiwi-secret"] !== secret) {
-      return res.status(401).json({ success: false, message: "Unauthorized" });
-    }
+    if (!requireSharedSecret(req, res)) return;
 
     const { notes, slidesUrl, thumbnailUrls, language } = req.body;
     if (!Array.isArray(thumbnailUrls) || !thumbnailUrls.length || !Array.isArray(notes) || !slidesUrl) {
@@ -375,10 +393,7 @@ function createRouter(wss) {
   // owns the session) to get the live teacher token so it can hand the teacher
   // back into their running session. 404 once the session is no longer live.
   router.get("/api/sessions/:sessionCode/teacher-token", (req, res) => {
-    const secret = process.env.APPSCRIPT_SECRET;
-    if (secret && req.headers["x-codekiwi-secret"] !== secret) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
+    if (!requireSharedSecret(req, res)) return;
     const { sessionCode } = req.params;
     const status = getSessionStatus(sessionCode);
     const token = getTeacherToken(sessionCode);
