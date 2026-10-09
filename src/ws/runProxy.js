@@ -8,13 +8,15 @@
 //              { type: "stop" } (Ctrl+C)
 //   backend -> { type: "started", compiling }, { type: "running" } once the program
 //              (not the compiler) is running, { type: "out", data } as output streams,
-//              { type: "exit", notice, grade, output } once, then closes.
+//              { type: "grading" } while test cases run, then
+//              { type: "exit", notice, grade, output } once, and closes.
 //              { type: "error", message, retryable } if the run never starts.
 // The browser never reaches the executor and never sees its secret.
 
 const WebSocket = require("ws");
 const { SUPPORTED, EXECUTOR_URL, EXECUTOR_SECRET } = require("../services/codeExecutor");
 const { authorizeRun, gradeAndRecord } = require("../services/runAccess");
+const { getTestsForSlide, testStdin } = require("../services/grader");
 
 const START_TIMEOUT_MS = 30_000; // queued behind a busy executor this long at most
 const MAX_TRANSCRIPT = 200_000;
@@ -27,6 +29,7 @@ function attachRunProxy(runWss) {
     let transcript = ""; // what the student's screen shows: output plus typed input
     let req = null;
     let isTeacher = false;
+    let userStopped = false; // Stop / Ctrl+C, possibly while tests were running
 
     const send = (msg) => {
       if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(msg));
@@ -59,15 +62,19 @@ function attachRunProxy(runWss) {
         if (!access.ok) return fail(access.error, access.status === 429);
         if (!EXECUTOR_URL) return fail("Code execution is temporarily unavailable. Please try again shortly.", true);
         isTeacher = access.isTeacher;
-        req = { sessionCode: String(sessionCode), studentId, slideIndex };
+        req = { sessionCode: String(sessionCode), studentId, slideIndex, code, language };
         console.log("📩 /run (interactive)", { language, sessionCode: req.sessionCode });
 
         upstream = new WebSocket(EXECUTOR_URL.replace(/^http/, "ws") + "/interactive", {
           headers: { "x-executor-secret": EXECUTOR_SECRET },
         });
         const startTimer = setTimeout(() => fail("The code runner is overloaded. Try again in a few seconds.", true), START_TIMEOUT_MS);
-        upstream.on("open", () => upstream.send(JSON.stringify({ type: "start", code, language })));
-        upstream.on("message", (data) => {
+        // Students on a graded slide: the executor runs the slide's tests right
+        // after their program, reusing its compiled binary.
+        const spec = !isTeacher && Number.isInteger(slideIndex) ? getTestsForSlide(req.sessionCode, slideIndex) : null;
+        const tests = spec ? spec.tests.map((t) => ({ input: testStdin(t.input) })) : undefined;
+        upstream.on("open", () => upstream.send(JSON.stringify({ type: "start", code, language, tests })));
+        upstream.on("message", async (data) => {
           let m;
           try {
             m = JSON.parse(data);
@@ -79,6 +86,8 @@ function attachRunProxy(runWss) {
             send({ type: "started", compiling: !!m.compiling });
           } else if (m.type === "running") {
             send({ type: "running" });
+          } else if (m.type === "grading") {
+            send({ type: "grading" });
           } else if (m.type === "out") {
             append(m.data);
             send({ type: "out", data: m.data });
@@ -92,11 +101,12 @@ function attachRunProxy(runWss) {
             const output = m.notice ? (transcript ? transcript.replace(/\n?$/, "\n") : "") + m.notice : transcript;
             // Teacher demo runs just execute and return: nothing to grade or record.
             // A run the student stopped themselves (Ctrl+C / Stop) isn't an attempt.
-            const stopped = (m.notice || "").startsWith("^C");
+            const stopped = userStopped || (m.notice || "").startsWith("^C");
             // Exit status is unknown when the executor itself ended the run
             // (idle timeout, output cap); grading then sniffs the output.
             const crashed = Number.isInteger(m.exitCode) ? m.exitCode !== 0 : undefined;
-            const grade = isTeacher || stopped ? { graded: false, stopped } : gradeAndRecord({ ...req, output, crashed });
+            let grade = { graded: false, stopped };
+            if (!isTeacher && !stopped) grade = await gradeAndRecord({ ...req, output, crashed, testRun: m.tests });
             send({ type: "exit", notice: m.notice || "", grade, output });
             client.close();
           }
@@ -118,6 +128,7 @@ function attachRunProxy(runWss) {
         append(msg.data);
         upstream.send(JSON.stringify({ type: "input", data: msg.data }));
       } else if (msg.type === "eof" || msg.type === "stop") {
+        if (msg.type === "stop") userStopped = true;
         upstream.send(JSON.stringify({ type: msg.type }));
       }
     });

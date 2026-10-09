@@ -2,7 +2,8 @@
 // /run WebSocket so the two paths can never drift apart.
 
 const { getStudents, getSessionStatus, getTeacherToken, isLocked, recordRun } = require("../state/store");
-const { getExpectedForSlide, gradeOutput, looksLikeError } = require("./grader");
+const { getTestsForSlide, gradeTest, testStdin, looksLikeError } = require("./grader");
+const { executeTests } = require("./codeExecutor");
 const { safeEqual } = require("../utils/secrets");
 
 const MAX_CODE_LENGTH = 50_000;
@@ -62,36 +63,62 @@ function authorizeRun({ code, language, sessionCode, studentId, teacherToken }) 
   return { ok: true, isTeacher };
 }
 
+const MAX_SHOWN_OUTPUT = 2000; // per test, sent back to the student
+
 /**
- * Autograde a student's run against the slide's expected-output block (if any)
- * and record it so the teacher dashboard shows real status + scores.
- * An exact match wins outright: legitimate output like "Error: age must be
- * positive" must not be vetoed by the crash heuristic.
- * `crashed` is the program's exit status when known (interactive runs): a
- * non-zero exit means it failed, whatever it printed. When unknown, fall back
- * to sniffing the output for "error"/"traceback", which misses silent crashes
- * and flags programs that merely print the word "error". `isError` lets the student's terminal say "your program hit an error"
- * instead of "Done" or "Not quite".
- * @returns {{ graded: boolean, passed?: boolean, isError: boolean }}
+ * Grade a student's run and record it so the teacher dashboard shows real
+ * status + scores. On a slide with test cases, the student's program is run
+ * once per test input (on the executor) and the question passes when every
+ * test does. Without tests the run is recorded ungraded.
+ *
+ * `crashed` is the interactive run's exit status when known: a non-zero exit
+ * means it failed, whatever it printed. When unknown, fall back to sniffing
+ * the output for "error"/"traceback".
+ *
+ * @returns {Promise<{ graded: boolean, passed?: boolean, isError: boolean,
+ *   passedCount?: number, total?: number, compileError?: string,
+ *   tests?: { input: string, expected: string, got: string, passed: boolean }[] }>}
  */
-function gradeAndRecord({ sessionCode, studentId, slideIndex, output, crashed }) {
+async function gradeAndRecord({ sessionCode, studentId, slideIndex, code, language, output, crashed, testRun }) {
   const idx = Number.isInteger(slideIndex) ? slideIndex : null;
-  const failed = () => (typeof crashed === "boolean" ? crashed : looksLikeError(output));
-  if (idx === null) {
-    const isError = failed();
-    recordRun(sessionCode, studentId, { graded: false, isError });
-    return { graded: false, isError };
+  const runFailed = typeof crashed === "boolean" ? crashed : looksLikeError(output);
+  const spec = idx === null ? null : getTestsForSlide(sessionCode, idx);
+  if (!spec) {
+    recordRun(sessionCode, studentId, { ...(idx === null ? {} : { slideIndex: idx }), graded: false, isError: runFailed });
+    return { graded: false, isError: runFailed };
   }
-  const expected = getExpectedForSlide(sessionCode, idx);
-  if (expected === null) {
-    const isError = failed();
-    recordRun(sessionCode, studentId, { slideIndex: idx, graded: false, isError });
-    return { graded: false, isError };
+
+  // `testRun`: results the executor already produced right after an
+  // interactive run (same binary). Otherwise run the tests now.
+  let result = testRun && !testRun.error ? testRun : null;
+  try {
+    if (!result) result = await executeTests({ code, language, inputs: spec.tests.map((t) => testStdin(t.input)) });
+  } catch (err) {
+    // Couldn't run the tests (runner busy or down): record the run ungraded
+    // rather than failing a student for an infrastructure problem.
+    console.warn("Test run failed:", err.message);
+    recordRun(sessionCode, studentId, { slideIndex: idx, graded: false, isError: runFailed });
+    return { graded: false, isError: runFailed, unavailable: true };
   }
-  const passed = gradeOutput(output, expected);
-  const isError = !passed && failed();
+
+  if (result.compileOutput) {
+    recordRun(sessionCode, studentId, { slideIndex: idx, graded: true, passed: false, isError: true });
+    return { graded: true, passed: false, isError: true, passedCount: 0, total: spec.tests.length, compileError: result.compileOutput.slice(0, MAX_SHOWN_OUTPUT) };
+  }
+
+  const tests = spec.tests.map((t, i) => {
+    const r = (result.results || [])[i] || { output: "", notice: "Not run", exitCode: null };
+    const got = r.notice ? `${r.output}${r.output && !r.output.endsWith("\n") ? "\n" : ""}${r.notice}` : r.output;
+    // A test passes only if the program also exited cleanly: printing the right
+    // answer and then crashing or returning non-zero is still a failure.
+    const passed = !r.notice && r.exitCode === 0 && gradeTest(r.output, t.output, spec.lenient);
+    return { input: t.input, expected: t.output, got: got.slice(0, MAX_SHOWN_OUTPUT), passed, crashed: !!r.notice || (r.exitCode !== 0 && r.exitCode != null) };
+  });
+  const passedCount = tests.filter((t) => t.passed).length;
+  const passed = passedCount === tests.length;
+  const isError = !passed && (runFailed || tests.some((t) => !t.passed && t.crashed));
   recordRun(sessionCode, studentId, { slideIndex: idx, graded: true, passed, isError });
-  return { graded: true, passed, isError };
+  return { graded: true, passed, isError, passedCount, total: tests.length, tests: tests.map(({ crashed: _c, ...t }) => t) };
 }
 
 module.exports = { authorizeRun, gradeAndRecord };

@@ -1,71 +1,14 @@
-// Autograding for coding-question slides.
-//
-// A coding slide is authored in its speaker notes with the existing
-// "Code Question:" marker. To make it auto-gradable, the teacher adds an
-// "Expected Output:" block below the prompt, e.g.
-//
-//   Code Question:
-//   Print a happy face emoji
-//
-//   Expected Output:
-//   😊
-//
-// Everything after "Expected Output:" is the expected program stdout. When a
-// student runs code on that slide, we compare the (normalized) program output
-// to the expected block and record pass/fail on their record. No expected
-// block => the question is ungraded and "Done" can't be claimed objectively.
+// Autograding for coding-question slides. A coding slide's speaker notes hold
+// the prompt and its test cases (format and matching rules in testCases.js).
+// When a student runs code on a slide with tests, the backend runs their
+// program once per test input and the question passes when every test does.
+// No tests => the question is ungraded and "Done" can't be claimed objectively.
 
 const fs = require("fs");
 const path = require("path");
+const { parseCodingNote, gradeTest, testStdin } = require("./testCases");
 
 const SLIDES_DIR = path.join(__dirname, "../../slides");
-
-const QUESTION_MARKER = /^\s*code question:\s*/i;
-// Marker must start a line so an "expected output:" mention inside the prompt
-// prose doesn't get treated as the split. (^|\n): an empty prompt puts it at
-// the very start of the body. Keep in sync with splitCodingNote in Code.js.
-const EXPECTED_MARKER = /(?:^|\n)[^\S\n]*expected output:[^\S\n]*\n?/i;
-
-/**
- * Split a coding-slide speaker note into its prompt and expected-output block.
- * @param {unknown} note raw speaker-note string
- * @returns {{ isCoding: boolean, prompt: string, expected: string | null }}
- */
-function parseCodingNote(note) {
-  if (typeof note !== "string" || !QUESTION_MARKER.test(note)) {
-    return { isCoding: false, prompt: "", expected: null };
-  }
-  const body = note.replace(QUESTION_MARKER, "");
-  const m = body.match(EXPECTED_MARKER);
-  if (!m) return { isCoding: true, prompt: body.trim(), expected: null };
-  const prompt = body.slice(0, m.index).trim();
-  const expected = body.slice(m.index + m[0].length);
-  return { isCoding: true, prompt, expected };
-}
-
-/**
- * Normalize output for comparison: unify newlines, strip per-line trailing
- * whitespace, and drop leading/trailing blank lines. Internal blank lines and
- * spacing are preserved so multi-line output is still compared faithfully.
- */
-function normalizeOutput(s) {
-  return String(s ?? "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .map((line) => line.replace(/[^\S\n]+$/g, ""))
-    .join("\n")
-    .replace(/^\n+/, "")
-    .replace(/\n+$/, "");
-}
-
-/**
- * True when the actual program output matches the expected block after
- * whitespace normalization.
- */
-function gradeOutput(actual, expected) {
-  return normalizeOutput(actual) === normalizeOutput(expected);
-}
 
 /**
  * Heuristic: does the merged stdout+stderr look like a runtime error? Mirrors
@@ -92,21 +35,21 @@ function readNotes(sessionCode) {
 }
 
 /**
- * Expected-output string for a given slide, or null if the slide isn't a
- * coding question, has no expected block, or the notes can't be read.
+ * A slide's test cases, or null if it isn't a coding question, has no tests,
+ * or the notes can't be read.
+ * @returns {{ tests: { input: string, output: string }[], lenient: boolean } | null}
  */
-function getExpectedForSlide(sessionCode, slideIndex) {
+function getTestsForSlide(sessionCode, slideIndex) {
   const notes = readNotes(sessionCode);
   if (!Array.isArray(notes)) return null;
-  const { expected } = parseCodingNote(notes[slideIndex]);
-  if (expected === null || String(expected).trim() === "") return null;
-  return expected;
+  const { tests, lenient } = parseCodingNote(notes[slideIndex]);
+  return tests.length ? { tests, lenient } : null;
 }
 
 module.exports = {
   parseCodingNote,
-  normalizeOutput,
-  gradeOutput,
+  gradeTest,
+  testStdin,
   looksLikeError,
-  getExpectedForSlide,
+  getTestsForSlide,
 };

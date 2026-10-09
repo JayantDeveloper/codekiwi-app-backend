@@ -67,4 +67,31 @@ async function executeCode({ code, language }) {
   }
 }
 
-module.exports = { executeCode, ExecutorUnavailable, SUPPORTED, EXECUTOR_URL, EXECUTOR_SECRET };
+/**
+ * Run code once per test input on the executor (compiling at most once).
+ * @param {{ code: string, language: string, inputs: string[] }} params
+ * @returns {Promise<{ compileOutput?: string, results: { output: string, notice: string, exitCode: number|null }[] }>}
+ */
+async function executeTests({ code, language, inputs }) {
+  if (!SUPPORTED.has(language)) throw new Error(`Unsupported language: ${language}`);
+  if (!EXECUTOR_URL) throw new ExecutorUnavailable("Code execution is temporarily unavailable.");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60_000); // up to 10 tests x 15s each, queued
+  try {
+    const res = await fetch(`${EXECUTOR_URL}/execute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-executor-secret": EXECUTOR_SECRET },
+      body: JSON.stringify({ code, language, tests: inputs.map((input) => ({ input })) }),
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new ExecutorUnavailable(`Executor responded ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    if (err instanceof ExecutorUnavailable) throw err;
+    throw new ExecutorUnavailable(err.name === "AbortError" ? "Tests timed out" : err.message);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+module.exports = { executeCode, executeTests, ExecutorUnavailable, SUPPORTED, EXECUTOR_URL, EXECUTOR_SECRET };

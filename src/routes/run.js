@@ -20,7 +20,7 @@ router.post("/api/run", async (req, res) => {
       return res.json({ output, grade: { graded: false } });
     }
 
-    const grade = gradeAndRecord({ sessionCode, studentId, slideIndex, output });
+    const grade = await gradeAndRecord({ sessionCode, studentId, slideIndex, code, language, output });
     res.json({ output, grade });
   } catch (err) {
     if (err instanceof ExecutorUnavailable) {
