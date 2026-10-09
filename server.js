@@ -14,6 +14,7 @@ const fs = require("fs");
 const bodyParser = require("body-parser");
 
 const { attachHandlers } = require("./src/ws/slideSync");
+const { attachRunProxy } = require("./src/ws/runProxy");
 const { createRouter: createSessionsRouter } = require("./src/routes/sessions");
 const runRouter = require("./src/routes/run");
 const { scheduleCleanup, TEMP_DIR } = require("./src/utils/cleanup");
@@ -21,7 +22,15 @@ const { scheduleCleanup, TEMP_DIR } = require("./src/utils/cleanup");
 const app = express();
 const server = http.createServer(app);
 // 256 KB is ample for demo code; the default is 100 MiB per message.
-const wss = new WebSocket.Server({ server, maxPayload: 256 * 1024 });
+// Two socket servers share the HTTP server: /run carries interactive program
+// I/O, every other path is the session/slide-sync socket.
+const wss = new WebSocket.Server({ noServer: true, maxPayload: 256 * 1024 });
+const runWss = new WebSocket.Server({ noServer: true, maxPayload: 128 * 1024 });
+server.on("upgrade", (req, socket, head) => {
+  const { pathname } = new URL(req.url, "http://x");
+  const target = pathname === "/run" ? runWss : wss;
+  target.handleUpgrade(req, socket, head, (ws) => target.emit("connection", ws, req));
+});
 
 const PORT = process.env.PORT || 4000;
 
@@ -60,6 +69,7 @@ app.get("/health", (_req, res) => res.json({ status: "OK", timestamp: new Date()
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 attachHandlers(wss);
+attachRunProxy(runWss);
 
 // ── Cleanup ───────────────────────────────────────────────────────────────────
 scheduleCleanup();

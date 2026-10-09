@@ -21,9 +21,10 @@ const path = require("path");
 const SLIDES_DIR = path.join(__dirname, "../../slides");
 
 const QUESTION_MARKER = /^\s*code question:\s*/i;
-// Marker must sit on its own line (preceded by a newline) so an "expected
-// output:" mention inside the prompt prose doesn't get treated as the split.
-const EXPECTED_MARKER = /\n[^\S\n]*expected output:[^\S\n]*\n?/i;
+// Marker must start a line so an "expected output:" mention inside the prompt
+// prose doesn't get treated as the split. (^|\n): an empty prompt puts it at
+// the very start of the body. Keep in sync with splitCodingNote in Code.js.
+const EXPECTED_MARKER = /(?:^|\n)[^\S\n]*expected output:[^\S\n]*\n?/i;
 
 /**
  * Split a coding-slide speaker note into its prompt and expected-output block.

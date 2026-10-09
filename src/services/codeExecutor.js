@@ -8,7 +8,7 @@ const EXECUTOR_URL = (process.env.EXECUTOR_URL || "").replace(/\/$/, "");
 const EXECUTOR_SECRET = process.env.EXECUTOR_SECRET || "";
 const EXECUTOR_TIMEOUT_MS = 25_000; // generous; the executor enforces its own wall-clock
 
-const SUPPORTED = new Set(["python", "javascript", "java"]);
+const SUPPORTED = new Set(["python", "javascript", "java", "cpp"]);
 
 // The executor could not run the program at all (busy, down, or unreachable).
 // Distinct from program output so callers never grade it as a wrong answer.
@@ -67,4 +67,4 @@ async function executeCode({ code, language }) {
   }
 }
 
-module.exports = { executeCode, ExecutorUnavailable };
+module.exports = { executeCode, ExecutorUnavailable, SUPPORTED, EXECUTOR_URL, EXECUTOR_SECRET };
